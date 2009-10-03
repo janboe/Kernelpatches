@@ -1,0 +1,285 @@
+Fix missing mutex_spin_on_owner function. Should fix i915 problems and
+hopefully some other less understood ones.
+
+Make prio_ratios static.
+
+Trivial documentation and indentation updates.
+
+Remove unused migration_queue.
+
+first_time_slice is unlikely; make it so.
+
+Microoptimise grq locking in task_running_tick.
+
+Reschedule on changing nice value only if task is now lower priority.
+
+Don't bother initialising grq variables in sched_init. Being global variables
+they will be initialised to zero anyway.
+
+Change locality for different nodes to 3. This makes deadlines 4* longer on
+different nodes in keeping with the 2* longer for different cpus, taking it
+another 2* to change nodes.
+
+---
+ kernel/sched_bfs.c |   99 ++++++++++++++++++++++++++++++++++++++---------------
+ 1 file changed, 72 insertions(+), 27 deletions(-)
+
+Index: linux-2.6.31-bfs/kernel/sched_bfs.c
+===================================================================
+--- linux-2.6.31-bfs.orig/kernel/sched_bfs.c	2009-10-03 15:12:23.012285311 +1000
++++ linux-2.6.31-bfs/kernel/sched_bfs.c	2009-10-03 15:12:56.551282620 +1000
+@@ -150,7 +150,7 @@ int sched_iso_cpu __read_mostly = 70;
+ /*
+  * The relative length of deadline for each priority(nice) level.
+  */
+-int prio_ratios[PRIO_RANGE] __read_mostly;
++static int prio_ratios[PRIO_RANGE] __read_mostly;
+ 
+ /*
+  * The quota handed out to tasks of all priority levels when refilling their
+@@ -207,7 +207,7 @@ struct rq {
+ 	/* Accurate timekeeping data */
+ 	u64 timekeep_clock;
+ 	unsigned long user_pc, nice_pc, irq_pc, softirq_pc, system_pc,
+-			iowait_pc, idle_pc;
++		iowait_pc, idle_pc;
+ 	atomic_t nr_iowait;
+ 
+ 	int cpu;		/* cpu of this runqueue */
+@@ -217,8 +217,6 @@ struct rq {
+ 	struct root_domain *rd;
+ 	struct sched_domain *sd;
+ 	unsigned long *cpu_locality; /* CPU relative cache distance */
+-
+-	struct list_head migration_queue;
+ #endif
+ 
+ 	u64 clock;
+@@ -395,24 +393,21 @@ static inline struct rq
+ 	return rq;
+ }
+ 
+-static inline struct rq
+-*task_grq_lock_irq(struct task_struct *p)
++static inline struct rq *task_grq_lock_irq(struct task_struct *p)
+ 	__acquires(grq.lock)
+ {
+ 	grq_lock_irq();
+ 	return task_rq(p);
+ }
+ 
+-static inline void
+-time_task_grq_lock_irq(struct task_struct *p)
++static inline void time_task_grq_lock_irq(struct task_struct *p)
+ 	__acquires(grq.lock)
+ {
+ 	struct rq *rq = task_grq_lock_irq(p);
+ 	update_rq_clock(rq);
+ }
+ 
+-static inline void
+-task_grq_unlock_irq(void)
++static inline void task_grq_unlock_irq(void)
+ 	__releases(grq.lock)
+ {
+ 	grq_unlock_irq();
+@@ -634,8 +629,11 @@ static inline void resched_suitable_idle
+  * to offset the virtual deadline. "One" difference in locality means that one
+  * timeslice difference is allowed longer for the cpu local tasks. This is
+  * enough in the common case when tasks are up to 2* number of CPUs to keep
+- * tasks within their shared cache CPUs only. See sched_init_smp for how
+- * locality is determined.
++ * tasks within their shared cache CPUs only. CPUs on different nodes or not
++ * even in this domain (NUMA) have "3" difference, allowing 4 times longer
++ * deadlines before being taken onto another cpu, allowing for 2* the double
++ * seen by separate CPUs above. See sched_init_smp for how locality is
++ * determined.
+  */
+ static inline int
+ cache_distance(struct rq *task_rq, struct rq *rq, struct task_struct *p)
+@@ -1325,7 +1323,7 @@ void sched_exit(struct task_struct *p)
+ 	unsigned long flags;
+ 	struct rq *rq;
+ 
+-	if (p->first_time_slice) {
++	if (unlikely(p->first_time_slice)) {
+ 		int *par_tslice, *p_tslice;
+ 
+ 		parent = p->parent;
+@@ -2077,9 +2075,9 @@ static void task_running_tick(struct rq 
+ 		return;
+ 
+ 	/* p->time_slice <= 0. We only modify task_struct under grq lock */
+-	grq_lock();
+ 	p = rq->curr;
+ 	requeue_task(p);
++	grq_lock();
+ 	set_tsk_need_resched(p);
+ 	grq_unlock();
+ }
+@@ -2316,6 +2314,11 @@ static inline void schedule_debug(struct
+ #endif
+ }
+ 
++/*
++ * The currently running task's information is all stored in rq local data
++ * which is only modified by the local CPU, thereby allowing the data to be
++ * changed without grabbing the grq lock.
++ */
+ static inline void set_rq_task(struct rq *rq, struct task_struct *p)
+ {
+ 	rq->rq_time_slice = p->time_slice;
+@@ -2436,7 +2439,54 @@ EXPORT_SYMBOL(schedule);
+ #ifdef CONFIG_SMP
+ int mutex_spin_on_owner(struct mutex *lock, struct thread_info *owner)
+ {
+-	return 0;
++	unsigned int cpu;
++	struct rq *rq;
++
++#ifdef CONFIG_DEBUG_PAGEALLOC
++	/*
++	 * Need to access the cpu field knowing that
++	 * DEBUG_PAGEALLOC could have unmapped it if
++	 * the mutex owner just released it and exited.
++	 */
++	if (probe_kernel_address(&owner->cpu, cpu))
++		goto out;
++#else
++	cpu = owner->cpu;
++#endif
++
++	/*
++	 * Even if the access succeeded (likely case),
++	 * the cpu field may no longer be valid.
++	 */
++	if (cpu >= nr_cpumask_bits)
++		goto out;
++
++	/*
++	 * We need to validate that we can do a
++	 * get_cpu() and that we have the percpu area.
++	 */
++	if (!cpu_online(cpu))
++		goto out;
++
++	rq = cpu_rq(cpu);
++
++	for (;;) {
++		/*
++		 * Owner changed, break to re-assess state.
++		 */
++		if (lock->owner != owner)
++			break;
++
++		/*
++		 * Is that owner really running on that cpu?
++		 */
++		if (task_thread_info(rq->curr) != owner || need_resched())
++			return 0;
++
++		cpu_relax();
++	}
++out:
++	return 1;
+ }
+ #endif
+ 
+@@ -2934,7 +2984,7 @@ static inline void adjust_deadline(struc
+ 
+ void set_user_nice(struct task_struct *p, long nice)
+ {
+-	int queued, new_static;
++	int queued, new_static, old_static;
+ 	unsigned long flags;
+ 	struct rq *rq;
+ 
+@@ -2957,26 +3007,22 @@ void set_user_nice(struct task_struct *p
+ 		goto out_unlock;
+ 	}
+ 	queued = task_queued(p);
+-	/*
+-	 * If p is actually running, we don't need to do anything when
+-	 * changing the priority because the grq is unaffected.
+-	 */
+ 	if (queued)
+ 		dequeue_task(p);
+ 
+ 	adjust_deadline(p, new_static);
++	old_static = p->static_prio;
+ 	p->static_prio = new_static;
+ 	p->prio = effective_prio(p);
+ 
+ 	if (queued) {
+ 		enqueue_task(p);
+-		try_preempt(p, rq);
+-	}
+-
+-	/* Just resched the task, schedule() will know what to do. */
+-	if (task_running(p)) {
+-		resched_task(p);
++		if (new_static < old_static)
++			try_preempt(p, rq);
++	} else if (task_running(p)) {
+ 		reset_rq_task(rq, p);
++		if (old_static < new_static)
++			resched_task(p);
+ 	}
+ out_unlock:
+ 	task_grq_unlock(&flags);
+@@ -5984,7 +6030,6 @@ void __init sched_init(void)
+ #ifdef CONFIG_SMP
+ 	init_defrootdomain();
+ 	cpus_clear(grq.cpu_idle_map);
+-	grq.qnr = 0;
+ #endif
+ 	for_each_possible_cpu(i) {
+ 		struct rq *rq;
+@@ -5999,13 +6044,11 @@ void __init sched_init(void)
+ 		rq->sd = NULL;
+ 		rq->rd = NULL;
+ 		rq->online = 0;
+-		INIT_LIST_HEAD(&rq->migration_queue);
+ 		rq_attach_root(rq, &def_root_domain);
+ #endif
+ 		atomic_set(&rq->nr_iowait, 0);
+ 		highest_cpu = i;
+ 	}
+-	grq.iso_ticks = grq.nr_running = grq.nr_uninterruptible = 0;
+ 	for (i = 0; i < PRIO_LIMIT; i++)
+ 		INIT_LIST_HEAD(grq.queue + i);
+ 	bitmap_zero(grq.prio_bitmap, PRIO_LIMIT);
+@@ -6014,6 +6057,11 @@ void __init sched_init(void)
+ 
+ #ifdef CONFIG_SMP
+ 	nr_cpu_ids = highest_cpu + 1;
++
++	/*
++	 * Set the base locality for cpu cache distance calculation to
++	 * "distant" (3). Make sure the distance from a CPU to itself is 0.
++	 */
+ 	for_each_possible_cpu(i) {
+ 		struct rq *rq = cpu_rq(i);
+ 		int j;
+@@ -6023,7 +6071,7 @@ void __init sched_init(void)
+ 			if (i == j)
+ 				rq->cpu_locality[j] = 0;
+ 			else
+-				rq->cpu_locality[j] = 4;
++				rq->cpu_locality[j] = 3;
+ 		}
+ 	}
+ #endif
+Index: linux-2.6.31-bfs/init/main.c
+===================================================================
+--- linux-2.6.31-bfs.orig/init/main.c	2009-10-03 15:12:59.439281964 +1000
++++ linux-2.6.31-bfs/init/main.c	2009-10-03 15:13:15.990282747 +1000
+@@ -843,7 +843,7 @@ static noinline int init_post(void)
+ 	system_state = SYSTEM_RUNNING;
+ 	numa_default_policy();
+ 
+-	printk(KERN_INFO"Running BFS CPU scheduler v0.300 by Con Kolivas.\n");
++	printk(KERN_INFO"Running BFS CPU scheduler v0.300-test by Con Kolivas.\n");
+ 
+ 	if (sys_open((const char __user *) "/dev/console", O_RDWR, 0) < 0)
+ 		printk(KERN_WARNING "Warning: unable to open an initial console.\n");
