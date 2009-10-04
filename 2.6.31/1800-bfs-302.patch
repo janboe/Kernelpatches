@@ -1,7 +1,6 @@
-The Brain Fuck Scheduler v0.300 by Con Kolivas.
+The Brain Fuck Scheduler v0.302 by Con Kolivas.
 
-A single shared runqueue O(n) strict fairness earliest virtual deadline first
-design.
+A single shared runqueue O(n) strict fairness earliest deadline first design.
 
 Ultra low latency and excellent desktop performance.
 Not recommended for 4096 cpus.
@@ -23,33 +22,33 @@ Now includes accurate sub-tick accounting of tasks so userspace reported
 cpu usage may be very different.
 
 ---
- Documentation/sysctl/kernel.txt |   26
- Makefile                        |    2
- fs/pipe.c                       |    4
- fs/proc/base.c                  |    2
- include/linux/init_task.h       |   15
- include/linux/ioprio.h          |    2
+ Documentation/sysctl/kernel.txt |   26 
+ Makefile                        |    4 
+ fs/pipe.c                       |    4 
+ fs/proc/base.c                  |    2 
+ include/linux/init_task.h       |   15 
+ include/linux/ioprio.h          |    2 
  include/linux/sched.h           |  193 -
- init/Kconfig                    |   61
- init/main.c                     |    2
- kernel/Makefile                 |    4
- kernel/delayacct.c              |    2
- kernel/exit.c                   |    7
- kernel/fork.c                   |    1
- kernel/kthread.c                |    3
- kernel/posix-cpu-timers.c       |   14
- kernel/sched_bfs.c              | 6229 ++++++++++++++++++++++++++++++++++++++++
- kernel/sysctl.c                 |  156 -
- kernel/timer.c                  |    3
- kernel/trace/trace.c            |    4
- kernel/workqueue.c              |    2
- mm/oom_kill.c                   |    2
- 21 files changed, 6337 insertions(+), 397 deletions(-)
+ init/Kconfig                    |   61 
+ init/main.c                     |    2 
+ kernel/Makefile                 |    4 
+ kernel/delayacct.c              |    2 
+ kernel/exit.c                   |    7 
+ kernel/fork.c                   |    1 
+ kernel/kthread.c                |    3 
+ kernel/posix-cpu-timers.c       |   14 
+ kernel/sched_bfs.c              | 6251 ++++++++++++++++++++++++++++++++++++++++
+ kernel/sysctl.c                 |  156 
+ kernel/timer.c                  |    3 
+ kernel/trace/trace.c            |    4 
+ kernel/workqueue.c              |    2 
+ mm/oom_kill.c                   |    2 
+ 21 files changed, 6360 insertions(+), 398 deletions(-)
 
 Index: linux-2.6.31-bfs/Documentation/sysctl/kernel.txt
 ===================================================================
---- linux-2.6.31-bfs.orig/Documentation/sysctl/kernel.txt	2009-10-01 14:29:14.845585629 +1000
-+++ linux-2.6.31-bfs/Documentation/sysctl/kernel.txt	2009-10-01 14:29:39.950335529 +1000
+--- linux-2.6.31-bfs.orig/Documentation/sysctl/kernel.txt	2009-10-01 14:37:20.010168206 +1000
++++ linux-2.6.31-bfs/Documentation/sysctl/kernel.txt	2009-10-01 14:37:42.312167892 +1000
 @@ -27,6 +27,7 @@ show up in /proc/sys/kernel:
  - domainname
  - hostname
@@ -67,9 +66,9 @@ Index: linux-2.6.31-bfs/Documentation/sysctl/kernel.txt
  - rtsig-nr
  - sem
 @@ -171,6 +173,16 @@ Default value is "/sbin/hotplug".
-
+ 
  ==============================================================
-
+ 
 +iso_cpu:
 +
 +This sets the percentage cpu that the unprivileged SCHED_ISO tasks can
@@ -81,12 +80,12 @@ Index: linux-2.6.31-bfs/Documentation/sysctl/kernel.txt
 +==============================================================
 +
  l2cr: (PPC only)
-
+ 
  This flag controls the L2 cache of G3 processor boards. If
 @@ -333,6 +345,20 @@ rebooting. ???
-
+ 
  ==============================================================
-
+ 
 +rr_interval:
 +
 +This is the smallest duration that any cpu process scheduling unit
@@ -102,16 +101,16 @@ Index: linux-2.6.31-bfs/Documentation/sysctl/kernel.txt
 +==============================================================
 +
  rtsig-max & rtsig-nr:
-
+ 
  The file rtsig-max can be used to tune the maximum number
 Index: linux-2.6.31-bfs/fs/pipe.c
 ===================================================================
---- linux-2.6.31-bfs.orig/fs/pipe.c	2009-10-01 14:29:14.849585299 +1000
-+++ linux-2.6.31-bfs/fs/pipe.c	2009-10-01 14:29:39.951335796 +1000
+--- linux-2.6.31-bfs.orig/fs/pipe.c	2009-10-01 14:37:19.970167686 +1000
++++ linux-2.6.31-bfs/fs/pipe.c	2009-10-01 14:37:42.313168540 +1000
 @@ -78,10 +78,6 @@ void pipe_wait(struct pipe_inode_info *p
  {
  	DEFINE_WAIT(wait);
-
+ 
 -	/*
 -	 * Pipes are system-local resources, so sleeping on them
 -	 * is considered a noninteractive wait:
@@ -121,8 +120,8 @@ Index: linux-2.6.31-bfs/fs/pipe.c
  	schedule();
 Index: linux-2.6.31-bfs/include/linux/init_task.h
 ===================================================================
---- linux-2.6.31-bfs.orig/include/linux/init_task.h	2009-10-01 14:29:14.948585385 +1000
-+++ linux-2.6.31-bfs/include/linux/init_task.h	2009-10-01 14:29:39.952335644 +1000
+--- linux-2.6.31-bfs.orig/include/linux/init_task.h	2009-10-01 14:37:20.016168366 +1000
++++ linux-2.6.31-bfs/include/linux/init_task.h	2009-10-01 14:37:42.362168616 +1000
 @@ -116,21 +116,16 @@ extern struct cred init_cred;
  	.usage		= ATOMIC_INIT(2),				\
  	.flags		= PF_KTHREAD,					\
@@ -152,8 +151,8 @@ Index: linux-2.6.31-bfs/include/linux/init_task.h
  	.ptraced	= LIST_HEAD_INIT(tsk.ptraced),			\
 Index: linux-2.6.31-bfs/include/linux/sched.h
 ===================================================================
---- linux-2.6.31-bfs.orig/include/linux/sched.h	2009-10-01 14:29:14.959585945 +1000
-+++ linux-2.6.31-bfs/include/linux/sched.h	2009-10-01 14:29:39.954335619 +1000
+--- linux-2.6.31-bfs.orig/include/linux/sched.h	2009-10-01 14:37:20.030168032 +1000
++++ linux-2.6.31-bfs/include/linux/sched.h	2009-10-01 14:37:42.366170099 +1000
 @@ -36,8 +36,11 @@
  #define SCHED_FIFO		1
  #define SCHED_RR		2
@@ -165,12 +164,12 @@ Index: linux-2.6.31-bfs/include/linux/sched.h
 +
 +#define SCHED_MAX		(SCHED_IDLEPRIO)
 +#define SCHED_RANGE(policy)	((policy) <= SCHED_MAX)
-
+ 
  #ifdef __KERNEL__
-
+ 
 @@ -144,13 +147,10 @@ extern u64 cpu_nr_migrations(int cpu);
  extern unsigned long get_parent_ip(unsigned long addr);
-
+ 
  struct seq_file;
 -struct cfs_rq;
  struct task_group;
@@ -182,7 +181,7 @@ Index: linux-2.6.31-bfs/include/linux/sched.h
  #else
  static inline void
  proc_sched_show_task(struct task_struct *p, struct seq_file *m)
-@@ -159,10 +159,6 @@ proc_sched_show_task(struct task_struct
+@@ -159,10 +159,6 @@ proc_sched_show_task(struct task_struct 
  static inline void proc_sched_set_task(struct task_struct *p)
  {
  }
@@ -191,23 +190,23 @@ Index: linux-2.6.31-bfs/include/linux/sched.h
 -{
 -}
  #endif
-
+ 
  extern unsigned long long time_sync_thresh;
 @@ -254,8 +250,8 @@ extern asmlinkage void schedule_tail(str
  extern void init_idle(struct task_struct *idle, int cpu);
  extern void init_idle_bootup_task(struct task_struct *idle);
-
+ 
 -extern int runqueue_is_locked(void);
 -extern void task_rq_unlock_wait(struct task_struct *p);
 +extern int grunqueue_is_locked(void);
 +extern void grq_unlock_wait(void);
-
+ 
  extern cpumask_var_t nohz_cpu_mask;
  #if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ)
 @@ -1021,148 +1017,6 @@ struct uts_namespace;
  struct rq;
  struct sched_domain;
-
+ 
 -struct sched_class {
 -	const struct sched_class *next;
 -
@@ -354,9 +353,9 @@ Index: linux-2.6.31-bfs/include/linux/sched.h
  	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
  	void *stack;
 @@ -1172,17 +1026,16 @@ struct task_struct {
-
+ 
  	int lock_depth;		/* BKL lock depth */
-
+ 
 -#ifdef CONFIG_SMP
 -#ifdef __ARCH_WANT_UNLOCKED_CTXSW
  	int oncpu;
@@ -375,22 +374,22 @@ Index: linux-2.6.31-bfs/include/linux/sched.h
 +	u64 sched_time; /* sched_clock time spent running */
 +
 +	unsigned long rt_timeout;
-
+ 
  #ifdef CONFIG_PREEMPT_NOTIFIERS
  	/* list of struct preempt_notifier: */
 @@ -1205,6 +1058,9 @@ struct task_struct {
-
+ 
  	unsigned int policy;
  	cpumask_t cpus_allowed;
 +#ifdef CONFIG_HOTPLUG_CPU
 +	cpumask_t unplugged_mask;
 +#endif
-
+ 
  #ifdef CONFIG_PREEMPT_RCU
  	int rcu_read_lock_nesting;
 @@ -1273,6 +1129,7 @@ struct task_struct {
  	int __user *clear_child_tid;		/* CLONE_CHILD_CLEARTID */
-
+ 
  	cputime_t utime, stime, utimescaled, stimescaled;
 +	unsigned long utime_pc, stime_pc;
  	cputime_t gtime;
@@ -412,18 +411,18 @@ Index: linux-2.6.31-bfs/include/linux/sched.h
 +#define IDLE_PRIO		(MAX_RT_PRIO + 2)
 +#define PRIO_LIMIT		((IDLE_PRIO) + 1)
  #define DEFAULT_PRIO		(MAX_RT_PRIO + 20)
-
+ 
  static inline int rt_prio(int prio)
 @@ -1785,11 +1645,7 @@ task_sched_runtime(struct task_struct *t
  extern unsigned long long thread_group_sched_runtime(struct task_struct *task);
-
+ 
  /* sched_exec is called by processes performing an exec */
 -#ifdef CONFIG_SMP
 -extern void sched_exec(void);
 -#else
  #define sched_exec()   {}
 -#endif
-
+ 
  extern void sched_clock_idle_sleep_event(void);
  extern void sched_clock_idle_wakeup_event(u64 delta_ns);
 @@ -1939,6 +1795,7 @@ extern void wake_up_new_task(struct task
@@ -432,12 +431,12 @@ Index: linux-2.6.31-bfs/include/linux/sched.h
  extern void sched_fork(struct task_struct *p, int clone_flags);
 +extern void sched_exit(struct task_struct *p);
  extern void sched_dead(struct task_struct *p);
-
+ 
  extern void proc_caches_init(void);
 Index: linux-2.6.31-bfs/kernel/sysctl.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/sysctl.c	2009-10-01 14:29:14.933585293 +1000
-+++ linux-2.6.31-bfs/kernel/sysctl.c	2009-10-01 14:29:39.956335594 +1000
+--- linux-2.6.31-bfs.orig/kernel/sysctl.c	2009-10-01 14:37:20.098167787 +1000
++++ linux-2.6.31-bfs/kernel/sysctl.c	2009-10-01 14:37:42.395168837 +1000
 @@ -86,6 +86,8 @@ extern int percpu_pagelist_fraction;
  extern int compat_log;
  extern int latencytop_enabled;
@@ -449,7 +448,7 @@ Index: linux-2.6.31-bfs/kernel/sysctl.c
  #endif
 @@ -100,10 +102,11 @@ static int neg_one = -1;
  #endif
-
+ 
  static int zero;
 -static int __maybe_unused one = 1;
  static int __maybe_unused two = 2;
@@ -458,13 +457,13 @@ Index: linux-2.6.31-bfs/kernel/sysctl.c
 +static int __read_mostly one = 1;
 +static int __read_mostly one_hundred = 100;
 +static int __read_mostly five_thousand = 5000;
-
+ 
  /* this is needed for the proc_doulongvec_minmax of vm_dirty_bytes */
  static unsigned long dirty_bytes_min = 2 * PAGE_SIZE;
 @@ -238,134 +241,7 @@ static struct ctl_table root_table[] = {
  	{ .ctl_name = 0 }
  };
-
+ 
 -#ifdef CONFIG_SCHED_DEBUG
 -static int min_sched_granularity_ns = 100000;		/* 100 usecs */
 -static int max_sched_granularity_ns = NSEC_PER_SEC;	/* 1 second */
@@ -627,12 +626,12 @@ Index: linux-2.6.31-bfs/kernel/sysctl.c
  		.ctl_name	= KERN_SPIN_RETRY,
 Index: linux-2.6.31-bfs/kernel/workqueue.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/workqueue.c	2009-10-01 14:29:14.938585440 +1000
-+++ linux-2.6.31-bfs/kernel/workqueue.c	2009-10-01 14:29:39.957335302 +1000
+--- linux-2.6.31-bfs.orig/kernel/workqueue.c	2009-10-01 14:37:20.125168770 +1000
++++ linux-2.6.31-bfs/kernel/workqueue.c	2009-10-01 14:37:42.400168939 +1000
 @@ -317,8 +317,6 @@ static int worker_thread(void *__cwq)
  	if (cwq->wq->freezeable)
  		set_freezable();
-
+ 
 -	set_user_nice(current, -5);
 -
  	for (;;) {
@@ -641,8 +640,8 @@ Index: linux-2.6.31-bfs/kernel/workqueue.c
 Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ linux-2.6.31-bfs/kernel/sched_bfs.c	2009-10-01 14:29:39.962335239 +1000
-@@ -0,0 +1,6229 @@
++++ linux-2.6.31-bfs/kernel/sched_bfs.c	2009-10-05 03:18:35.546598380 +1100
+@@ -0,0 +1,6251 @@
 +/*
 + *  kernel/sched_bfs.c, was sched.c
 + *
@@ -793,11 +792,6 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +int sched_iso_cpu __read_mostly = 70;
 +
 +/*
-+ * The relative length of deadline for each priority(nice) level.
-+ */
-+int prio_ratios[PRIO_RANGE] __read_mostly;
-+
-+/*
 + * The quota handed out to tasks of all priority levels when refilling their
 + * time_slice.
 + */
@@ -852,18 +846,17 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	/* Accurate timekeeping data */
 +	u64 timekeep_clock;
 +	unsigned long user_pc, nice_pc, irq_pc, softirq_pc, system_pc,
-+			iowait_pc, idle_pc;
++		iowait_pc, idle_pc;
 +	atomic_t nr_iowait;
 +
 +	int cpu;		/* cpu of this runqueue */
-+	int online;
 +
 +#ifdef CONFIG_SMP
++	int online;
++
 +	struct root_domain *rd;
 +	struct sched_domain *sd;
 +	unsigned long *cpu_locality; /* CPU relative cache distance */
-+
-+	struct list_head migration_queue;
 +#endif
 +
 +	u64 clock;
@@ -1040,24 +1033,21 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	return rq;
 +}
 +
-+static inline struct rq
-+*task_grq_lock_irq(struct task_struct *p)
++static inline struct rq *task_grq_lock_irq(struct task_struct *p)
 +	__acquires(grq.lock)
 +{
 +	grq_lock_irq();
 +	return task_rq(p);
 +}
 +
-+static inline void
-+time_task_grq_lock_irq(struct task_struct *p)
++static inline void time_task_grq_lock_irq(struct task_struct *p)
 +	__acquires(grq.lock)
 +{
 +	struct rq *rq = task_grq_lock_irq(p);
 +	update_rq_clock(rq);
 +}
 +
-+static inline void
-+task_grq_unlock_irq(void)
++static inline void task_grq_unlock_irq(void)
 +	__releases(grq.lock)
 +{
 +	grq_unlock_irq();
@@ -1218,11 +1208,6 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	sched_info_queued(p);
 +}
 +
-+static inline int pratio(struct task_struct *p)
-+{
-+	return prio_ratios[TASK_USER_PRIO(p)];
-+}
-+
 +/*
 + * task_timeslice - all tasks of all priorities get the exact same timeslice
 + * length. CPU distribution is handled by giving different deadlines to
@@ -1230,7 +1215,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 + */
 +static inline int task_timeslice(struct task_struct *p)
 +{
-+	return (rr_interval * pratio(p) / 100);
++	return (TASK_USER_PRIO(p) + 1) * rr_interval;
 +}
 +
 +#ifdef CONFIG_SMP
@@ -1279,8 +1264,11 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 + * to offset the virtual deadline. "One" difference in locality means that one
 + * timeslice difference is allowed longer for the cpu local tasks. This is
 + * enough in the common case when tasks are up to 2* number of CPUs to keep
-+ * tasks within their shared cache CPUs only. See sched_init_smp for how
-+ * locality is determined.
++ * tasks within their shared cache CPUs only. CPUs on different nodes or not
++ * even in this domain (NUMA) have "3" difference, allowing 4 times longer
++ * deadlines before being taken onto another cpu, allowing for 2* the double
++ * seen by separate CPUs above. See sched_init_smp for how locality is
++ * determined.
 + */
 +static inline int
 +cache_distance(struct rq *task_rq, struct rq *rq, struct task_struct *p)
@@ -1692,70 +1680,49 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +/*
 + * RT tasks preempt purely on priority. SCHED_NORMAL tasks preempt on the
 + * basis of earlier deadlines. SCHED_BATCH, ISO and IDLEPRIO don't preempt
-+ * between themselves, they cooperatively multitask.
-+ */
-+static inline int task_preempts_curr(struct task_struct *p, struct rq *rq)
-+{
-+	if (p->prio < rq->rq_prio)
-+		return 1;
-+	if (p->policy == SCHED_NORMAL) {
-+		unsigned long p_deadline = p->deadline +
-+			cache_distance(task_rq(p), rq, p);
-+
-+		if ((p->prio == rq->rq_prio &&
-+		    time_before(p_deadline, rq->rq_deadline)))
-+			return 1;
-+	}
-+	return 0;
-+}
-+
-+/*
-+ * Wake up *any* suitable cpu to schedule this task.
++ * between themselves, they cooperatively multitask. An idle rq scores as
++ * prio PRIO_LIMIT so it is always preempted. The offset_deadline will choose
++ * an idle runqueue that is closer cache-wise in preference. latest_deadline
++ * and highest_prio_rq are initialised only to silence the compiler. When
++ * all else is equal, still prefer this_rq.
 + */
 +static void try_preempt(struct task_struct *p, struct rq *this_rq)
 +{
-+	unsigned long latest_deadline, cpu;
-+	struct rq *highest_prio_rq;
-+	int highest_prio;
++	unsigned long latest_deadline = 0, cpu;
++	struct rq *highest_prio_rq = this_rq;
++	int highest_prio = -1;
 +	cpumask_t tmp;
 +
 +	cpus_and(tmp, cpu_online_map, p->cpus_allowed);
 +
-+	/* Use this_rq as fallback */
-+	if (likely(cpu_isset(this_rq->cpu, tmp))) {
-+		highest_prio_rq = this_rq;
-+		/* If this_rq is idle, use that. */
-+		if (rq_idle(highest_prio_rq))
-+			goto found_rq;
-+	} else
-+		highest_prio_rq = cpu_rq(any_online_cpu(tmp));
-+	latest_deadline = highest_prio_rq->rq_deadline;
-+	highest_prio = highest_prio_rq->rq_prio;
-+
 +	for_each_cpu_mask(cpu, tmp) {
++		unsigned long offset_deadline;
 +		struct rq *rq;
 +		int rq_prio;
 +
 +		rq = cpu_rq(cpu);
-+
-+		if (rq_idle(rq)) {
-+			/* found an idle rq, use that one */
-+			highest_prio_rq = rq;
-+			goto found_rq;
-+		}
-+
 +		rq_prio = rq->rq_prio;
++		if (rq_prio < highest_prio)
++			continue;
++
++		offset_deadline = -cache_distance(this_rq, rq, p);
++		if (rq_prio != PRIO_LIMIT)
++			offset_deadline += rq->rq_deadline;
++
 +		if (rq_prio > highest_prio || (rq_prio == highest_prio &&
-+		    time_after(rq->rq_deadline, latest_deadline))) {
++		    (time_after(offset_deadline, latest_deadline) ||
++		    (this_rq == rq && offset_deadline == latest_deadline)))) {
++			latest_deadline = offset_deadline;
 +			highest_prio = rq_prio;
-+			latest_deadline = rq->rq_deadline;
 +			highest_prio_rq = rq;
 +		}
 +	}
 +
-+	if (!task_preempts_curr(p, highest_prio_rq))
-+		return;
-+found_rq:
++	if (p->prio > highest_prio || (p->policy == SCHED_NORMAL &&
++	    p->prio == highest_prio && !time_before(p->deadline, latest_deadline)))
++	    	return;
++
++	/* p gets to preempt highest_prio_rq->curr */
 +	resched_task(highest_prio_rq->curr);
 +	return;
 +}
@@ -1824,7 +1791,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	 * don't trigger a preemption if there are no idle cpus,
 +	 * instead waiting for current to deschedule.
 +	 */
-+	if (!sync || (sync && suitable_idle_cpus(p)))
++	if (!sync || suitable_idle_cpus(p))
 +		try_preempt(p, rq);
 +	success = 1;
 +
@@ -1970,7 +1937,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	unsigned long flags;
 +	struct rq *rq;
 +
-+	if (p->first_time_slice) {
++	if (unlikely(p->first_time_slice)) {
 +		int *par_tslice, *p_tslice;
 +
 +		parent = p->parent;
@@ -2406,20 +2373,9 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +static void
 +update_cpu_clock(struct rq *rq, struct task_struct *p, int tick)
 +{
-+	long time_diff = rq->clock - rq->rq_last_ran;
 +	long account_ns = rq->clock - rq->timekeep_clock;
 +	struct task_struct *idle = rq->idle;
 +	unsigned long account_pc;
-+
-+	/*
-+	 * There should be less than or equal to one jiffy worth, and not
-+	 * negative/overflow. time_diff is only used for internal scheduler
-+	 * time_slice accounting.
-+	 */
-+	if (time_diff <= 0)
-+		time_diff = JIFFIES_TO_NS(1) / 2;
-+	else if (time_diff > JIFFIES_TO_NS(1))
-+		time_diff = JIFFIES_TO_NS(1);
 +
 +	if (unlikely(account_ns < 0))
 +		account_ns = 0;
@@ -2446,8 +2402,21 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	}
 +
 +	/* time_slice accounting is done in usecs to avoid overflow on 32bit */
-+	if (rq->rq_policy != SCHED_FIFO && p != idle)
++	if (rq->rq_policy != SCHED_FIFO && p != idle) {
++		long time_diff = rq->clock - rq->rq_last_ran;
++
++		/*
++		 * There should be less than or equal to one jiffy worth, and not
++		 * negative/overflow. time_diff is only used for internal scheduler
++		 * time_slice accounting.
++		 */
++		if (time_diff <= 0)
++			time_diff = JIFFIES_TO_NS(1) / 2;
++		else if (time_diff > JIFFIES_TO_NS(1))
++			time_diff = JIFFIES_TO_NS(1);
++
 +		rq->rq_time_slice -= time_diff / 1000;
++	}
 +	rq->rq_last_ran = rq->timekeep_clock = rq->clock;
 +}
 +
@@ -2475,7 +2444,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +{
 +	unsigned long flags;
 +	struct rq *rq;
-+	u64 ns = 0;
++	u64 ns;
 +
 +	rq = task_grq_lock(p, &flags);
 +	ns = do_task_delta_exec(p, rq);
@@ -2493,7 +2462,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +{
 +	unsigned long flags;
 +	struct rq *rq;
-+	u64 ns = 0;
++	u64 ns;
 +
 +	rq = task_grq_lock(p, &flags);
 +	ns = p->sched_time + do_task_delta_exec(p, rq);
@@ -2679,6 +2648,9 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	if (grq.iso_ticks) {
 +		grq_lock();
 +		grq.iso_ticks = grq.iso_ticks * (ISO_PERIOD - 1) / ISO_PERIOD;
++		if (unlikely(grq.iso_refractory && grq.iso_ticks /
++		    ISO_PERIOD < (sched_iso_cpu * 90 / 100)))
++			clear_iso_refractory();
 +		grq_unlock();
 +	}
 +}
@@ -2722,9 +2694,9 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +		return;
 +
 +	/* p->time_slice <= 0. We only modify task_struct under grq lock */
-+	grq_lock();
 +	p = rq->curr;
 +	requeue_task(p);
++	grq_lock();
 +	set_tsk_need_resched(p);
 +	grq_unlock();
 +}
@@ -2813,16 +2785,28 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 + * is the key to everything. It distributes cpu fairly amongst tasks of the
 + * same nice value, it proportions cpu according to nice level, it means the
 + * task that last woke up the longest ago has the earliest deadline, thus
-+ * ensuring that interactive tasks get low latency on wake up.
++ * ensuring that interactive tasks get low latency on wake up. The CPU
++ * proportion works out to the square of the difference, so this equation will
++ * give nice 19 3% CPU compared to nice 0 and nice 0 3% compared to nice -20.
 + */
-+static inline int prio_deadline_diff(struct task_struct *p)
++static inline int prio_deadline_diff(int user_prio)
 +{
-+	return (pratio(p) * rr_interval * HZ / 1000 / 100) ? : 1;
++	return (user_prio + 1) * rr_interval * HZ / 500;
 +}
 +
-+static inline int longest_deadline(void)
++static inline int task_deadline_diff(struct task_struct *p)
 +{
-+	return (prio_ratios[39] * rr_interval * HZ / 1000 / 100);
++	return prio_deadline_diff(TASK_USER_PRIO(p));
++}
++
++static inline int static_deadline_diff(int static_prio)
++{
++	return prio_deadline_diff(USER_PRIO(static_prio));
++}
++
++static inline int longest_deadline_diff(void)
++{
++	return prio_deadline_diff(39);
 +}
 +
 +/*
@@ -2835,9 +2819,9 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +{
 +	reset_first_time_slice(p);
 +	p->time_slice = timeslice();
-+	p->deadline = jiffies + prio_deadline_diff(p);
++	p->deadline = jiffies + task_deadline_diff(p);
 +	if (idleprio_task(p))
-+		p->deadline += longest_deadline();
++		p->deadline += longest_deadline_diff();
 +}
 +
 +static inline void check_deadline(struct task_struct *p)
@@ -2878,7 +2862,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	idx = find_next_bit(grq.prio_bitmap, PRIO_LIMIT, idx);
 +	if (idx >= PRIO_LIMIT)
 +		goto out;
-+	queue = &grq.queue[idx];
++	queue = grq.queue + idx;
 +	list_for_each_entry(p, queue, run_list) {
 +		/* Make sure cpu affinity is ok */
 +		if (!cpu_isset(cpu, p->cpus_allowed))
@@ -2889,16 +2873,13 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +			goto out_take;
 +		}
 +
-+		/*
-+		 * No rt task, select the earliest deadline task now.
-+		 * On the 1st run the 2nd condition is never used, so
-+		 * there is no need to initialise earliest_deadline
-+		 * before. Normalise all old deadlines to now.
-+		 */
 +		dl = p->deadline + cache_distance(task_rq(p), rq, p);
-+		if (time_before(dl, jiffies))
-+			dl = jiffies;
 +
++		/*
++		 * No rt tasks. Find the earliest deadline task. Now we're in
++		 * O(n) territory. This is what we silenced the compiler for:
++		 * edt will always start as idle.
++		 */
 +		if (edt == idle ||
 +		    time_before(dl, earliest_deadline)) {
 +			earliest_deadline = dl;
@@ -2961,6 +2942,11 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +#endif
 +}
 +
++/*
++ * The currently running task's information is all stored in rq local data
++ * which is only modified by the local CPU, thereby allowing the data to be
++ * changed without grabbing the grq lock.
++ */
 +static inline void set_rq_task(struct rq *rq, struct task_struct *p)
 +{
 +	rq->rq_time_slice = p->time_slice;
@@ -3081,7 +3067,54 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +#ifdef CONFIG_SMP
 +int mutex_spin_on_owner(struct mutex *lock, struct thread_info *owner)
 +{
-+	return 0;
++	unsigned int cpu;
++	struct rq *rq;
++
++#ifdef CONFIG_DEBUG_PAGEALLOC
++	/*
++	 * Need to access the cpu field knowing that
++	 * DEBUG_PAGEALLOC could have unmapped it if
++	 * the mutex owner just released it and exited.
++	 */
++	if (probe_kernel_address(&owner->cpu, cpu))
++		goto out;
++#else
++	cpu = owner->cpu;
++#endif
++
++	/*
++	 * Even if the access succeeded (likely case),
++	 * the cpu field may no longer be valid.
++	 */
++	if (cpu >= nr_cpumask_bits)
++		goto out;
++
++	/*
++	 * We need to validate that we can do a
++	 * get_cpu() and that we have the percpu area.
++	 */
++	if (!cpu_online(cpu))
++		goto out;
++
++	rq = cpu_rq(cpu);
++
++	for (;;) {
++		/*
++		 * Owner changed, break to re-assess state.
++		 */
++		if (lock->owner != owner)
++			break;
++
++		/*
++		 * Is that owner really running on that cpu?
++		 */
++		if (task_thread_info(rq->curr) != owner || need_resched())
++			return 0;
++
++		cpu_relax();
++	}
++out:
++	return 1;
 +}
 +#endif
 +
@@ -3573,13 +3606,12 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 + */
 +static inline void adjust_deadline(struct task_struct *p, int new_prio)
 +{
-+	p->deadline += (prio_ratios[USER_PRIO(new_prio)] - pratio(p)) *
-+			rr_interval * HZ / 1000 / 100;
++	p->deadline += static_deadline_diff(new_prio) - task_deadline_diff(p);
 +}
 +
 +void set_user_nice(struct task_struct *p, long nice)
 +{
-+	int queued, new_static;
++	int queued, new_static, old_static;
 +	unsigned long flags;
 +	struct rq *rq;
 +
@@ -3602,26 +3634,22 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +		goto out_unlock;
 +	}
 +	queued = task_queued(p);
-+	/*
-+	 * If p is actually running, we don't need to do anything when
-+	 * changing the priority because the grq is unaffected.
-+	 */
 +	if (queued)
 +		dequeue_task(p);
 +
 +	adjust_deadline(p, new_static);
++	old_static = p->static_prio;
 +	p->static_prio = new_static;
 +	p->prio = effective_prio(p);
 +
 +	if (queued) {
 +		enqueue_task(p);
-+		try_preempt(p, rq);
-+	}
-+
-+	/* Just resched the task, schedule() will know what to do. */
-+	if (task_running(p)) {
-+		resched_task(p);
++		if (new_static < old_static)
++			try_preempt(p, rq);
++	} else if (task_running(p)) {
 +		reset_rq_task(rq, p);
++		if (old_static < new_static)
++			resched_task(p);
 +	}
 +out_unlock:
 +	task_grq_unlock(&flags);
@@ -3701,7 +3729,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	if (prio <= 0)
 +		goto out;
 +
-+	delta = (p->deadline - jiffies) * 40 / longest_deadline();
++	delta = (p->deadline - jiffies) * 40 / longest_deadline_diff();
 +	if (delta > 0 && delta <= 80)
 +		prio += delta;
 +out:
@@ -3786,7 +3814,7 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +		       struct sched_param *param, bool user)
 +{
 +	struct sched_param zero_param = { .sched_priority = 0 };
-+	int queued, retval, oldprio, oldpolicy = -1;
++	int queued, retval, oldpolicy = -1;
 +	unsigned long flags, rlim_rtprio = 0;
 +	struct rq *rq;
 +
@@ -3897,7 +3925,6 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +	queued = task_queued(p);
 +	if (queued)
 +		dequeue_task(p);
-+	oldprio = p->prio;
 +	__setscheduler(p, rq, policy, param->sched_priority);
 +	if (queued) {
 +		enqueue_task(p);
@@ -4254,6 +4281,9 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +
 +static void __cond_resched(void)
 +{
++	/* NOT a real fix but will make voluntary preempt work. 馬鹿な事 */
++	if (unlikely(system_state != SYSTEM_RUNNING))
++		return;
 +#ifdef CONFIG_DEBUG_SPINLOCK_SLEEP
 +	__might_sleep(__FILE__, __LINE__);
 +#endif
@@ -6619,24 +6649,14 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +void __init sched_init(void)
 +{
 +	int i;
-+	int highest_cpu = 0;
-+
-+	prio_ratios[0] = 100;
-+	for (i = 1 ; i < PRIO_RANGE ; i++)
-+		prio_ratios[i] = prio_ratios[i - 1] * 11 / 10;
++	struct rq *rq;
 +
 +	spin_lock_init(&grq.lock);
 +#ifdef CONFIG_SMP
 +	init_defrootdomain();
-+	cpus_clear(grq.cpu_idle_map);
-+	grq.qnr = 0;
 +#endif
 +	for_each_possible_cpu(i) {
-+		struct rq *rq;
-+
 +		rq = cpu_rq(i);
-+		rq->rq_deadline = 0;
-+		rq->rq_prio = 0;
 +		rq->cpu = i;
 +		rq->user_pc = rq->nice_pc = rq->softirq_pc = rq->system_pc =
 +			      rq->iowait_pc = rq->idle_pc = 0;
@@ -6644,34 +6664,35 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +		rq->sd = NULL;
 +		rq->rd = NULL;
 +		rq->online = 0;
-+		INIT_LIST_HEAD(&rq->migration_queue);
 +		rq_attach_root(rq, &def_root_domain);
 +#endif
 +		atomic_set(&rq->nr_iowait, 0);
-+		highest_cpu = i;
 +	}
-+	grq.iso_ticks = grq.nr_running = grq.nr_uninterruptible = 0;
-+	for (i = 0; i < PRIO_LIMIT; i++)
-+		INIT_LIST_HEAD(grq.queue + i);
-+	bitmap_zero(grq.prio_bitmap, PRIO_LIMIT);
-+	/* delimiter for bitsearch */
-+	__set_bit(PRIO_LIMIT, grq.prio_bitmap);
 +
 +#ifdef CONFIG_SMP
-+	nr_cpu_ids = highest_cpu + 1;
++	nr_cpu_ids = i;
++	/*
++	 * Set the base locality for cpu cache distance calculation to
++	 * "distant" (3). Make sure the distance from a CPU to itself is 0.
++	 */
 +	for_each_possible_cpu(i) {
-+		struct rq *rq = cpu_rq(i);
 +		int j;
 +
++		rq = cpu_rq(i);
 +		rq->cpu_locality = kmalloc(nr_cpu_ids * sizeof(unsigned long), GFP_NOWAIT);
 +		for_each_possible_cpu(j) {
 +			if (i == j)
 +				rq->cpu_locality[j] = 0;
 +			else
-+				rq->cpu_locality[j] = 4;
++				rq->cpu_locality[j] = 3;
 +		}
 +	}
 +#endif
++
++	for (i = 0; i < PRIO_LIMIT; i++)
++		INIT_LIST_HEAD(grq.queue + i);
++	/* delimiter for bitsearch */
++	__set_bit(PRIO_LIMIT, grq.prio_bitmap);
 +
 +#ifdef CONFIG_PREEMPT_NOTIFIERS
 +	INIT_HLIST_HEAD(&init_task.preempt_notifiers);
@@ -6874,12 +6895,12 @@ Index: linux-2.6.31-bfs/kernel/sched_bfs.c
 +#endif
 Index: linux-2.6.31-bfs/kernel/Makefile
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/Makefile	2009-10-01 14:29:14.912585208 +1000
-+++ linux-2.6.31-bfs/kernel/Makefile	2009-10-01 14:29:39.963335506 +1000
+--- linux-2.6.31-bfs.orig/kernel/Makefile	2009-10-01 14:37:20.113167823 +1000
++++ linux-2.6.31-bfs/kernel/Makefile	2009-10-01 14:37:42.446173583 +1000
 @@ -2,7 +2,7 @@
  # Makefile for the linux kernel.
  #
-
+ 
 -obj-y     = sched.o fork.o exec_domain.o panic.o printk.o \
 +obj-y     = sched_bfs.o fork.o exec_domain.o panic.o printk.o \
  	    cpu.o exit.o itimer.o time.o softirq.o resource.o \
@@ -6892,19 +6913,19 @@ Index: linux-2.6.31-bfs/kernel/Makefile
 -CFLAGS_sched.o := $(PROFILING) -fno-omit-frame-pointer
 +CFLAGS_sched_bfs.o := $(PROFILING) -fno-omit-frame-pointer
  endif
-
+ 
  $(obj)/configs.o: $(obj)/config_data.h
 Index: linux-2.6.31-bfs/kernel/kthread.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/kthread.c	2009-10-01 14:29:14.882585375 +1000
-+++ linux-2.6.31-bfs/kernel/kthread.c	2009-10-01 14:29:39.964335423 +1000
+--- linux-2.6.31-bfs.orig/kernel/kthread.c	2009-10-01 14:37:20.119168562 +1000
++++ linux-2.6.31-bfs/kernel/kthread.c	2009-10-05 03:18:25.079473333 +1100
 @@ -16,7 +16,7 @@
  #include <linux/mutex.h>
  #include <trace/events/sched.h>
-
+ 
 -#define KTHREAD_NICE_LEVEL (-5)
 +#define KTHREAD_NICE_LEVEL (0)
-
+ 
  static DEFINE_SPINLOCK(kthread_create_lock);
  static LIST_HEAD(kthread_create_list);
 @@ -170,7 +170,6 @@ void kthread_bind(struct task_struct *k,
@@ -6917,15 +6938,15 @@ Index: linux-2.6.31-bfs/kernel/kthread.c
  EXPORT_SYMBOL(kthread_bind);
 Index: linux-2.6.31-bfs/kernel/posix-cpu-timers.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/posix-cpu-timers.c	2009-10-01 14:29:14.908585328 +1000
-+++ linux-2.6.31-bfs/kernel/posix-cpu-timers.c	2009-10-01 14:29:39.965335411 +1000
+--- linux-2.6.31-bfs.orig/kernel/posix-cpu-timers.c	2009-10-01 14:37:20.087168350 +1000
++++ linux-2.6.31-bfs/kernel/posix-cpu-timers.c	2009-10-01 14:37:42.480168416 +1000
 @@ -249,7 +249,7 @@ void thread_group_cputime(struct task_st
  	do {
  		times->utime = cputime_add(times->utime, t->utime);
  		times->stime = cputime_add(times->stime, t->stime);
 -		times->sum_exec_runtime += t->se.sum_exec_runtime;
 +		times->sum_exec_runtime += t->sched_time;
-
+ 
  		t = next_thread(t);
  	} while (t != tsk);
 @@ -516,7 +516,7 @@ static void cleanup_timers(struct list_h
@@ -6934,17 +6955,17 @@ Index: linux-2.6.31-bfs/kernel/posix-cpu-timers.c
  	cleanup_timers(tsk->cpu_timers,
 -		       tsk->utime, tsk->stime, tsk->se.sum_exec_runtime);
 +		       tsk->utime, tsk->stime, tsk->sched_time);
-
+ 
  }
  void posix_cpu_timers_exit_group(struct task_struct *tsk)
-@@ -526,7 +526,7 @@ void posix_cpu_timers_exit_group(struct
+@@ -526,7 +526,7 @@ void posix_cpu_timers_exit_group(struct 
  	cleanup_timers(tsk->signal->cpu_timers,
  		       cputime_add(tsk->utime, sig->utime),
  		       cputime_add(tsk->stime, sig->stime),
 -		       tsk->se.sum_exec_runtime + sig->sum_sched_runtime);
 +		       tsk->sched_time + sig->sum_sched_runtime);
  }
-
+ 
  static void clear_dead_task(struct k_itimer *timer, union cpu_time_count now)
 @@ -1017,7 +1017,7 @@ static void check_thread_timers(struct t
  		struct cpu_timer_list *t = list_first_entry(timers,
@@ -6957,7 +6978,7 @@ Index: linux-2.6.31-bfs/kernel/posix-cpu-timers.c
  		}
 @@ -1033,7 +1033,7 @@ static void check_thread_timers(struct t
  		unsigned long *soft = &sig->rlim[RLIMIT_RTTIME].rlim_cur;
-
+ 
  		if (hard != RLIM_INFINITY &&
 -		    tsk->rt.timeout > DIV_ROUND_UP(hard, USEC_PER_SEC/HZ)) {
 +		    tsk->rt_timeout > DIV_ROUND_UP(hard, USEC_PER_SEC/HZ)) {
@@ -6980,12 +7001,12 @@ Index: linux-2.6.31-bfs/kernel/posix-cpu-timers.c
 -			.sum_exec_runtime = tsk->se.sum_exec_runtime
 +			.sum_exec_runtime = tsk->sched_time
  		};
-
+ 
  		if (task_cputime_expired(&task_sample, &tsk->cputime_expires))
 Index: linux-2.6.31-bfs/kernel/exit.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/exit.c	2009-10-01 14:29:14.886585534 +1000
-+++ linux-2.6.31-bfs/kernel/exit.c	2009-10-01 14:29:39.966334630 +1000
+--- linux-2.6.31-bfs.orig/kernel/exit.c	2009-10-01 14:37:20.103167941 +1000
++++ linux-2.6.31-bfs/kernel/exit.c	2009-10-01 14:37:42.496168401 +1000
 @@ -120,7 +120,7 @@ static void __exit_signal(struct task_st
  		sig->inblock += task_io_get_inblock(tsk);
  		sig->oublock += task_io_get_oublock(tsk);
@@ -6994,7 +7015,7 @@ Index: linux-2.6.31-bfs/kernel/exit.c
 +		sig->sum_sched_runtime += tsk->sched_time;
  		sig = NULL; /* Marker for below. */
  	}
-
+ 
 @@ -142,10 +142,10 @@ static void __exit_signal(struct task_st
  		flush_sigqueue(&sig->shared_pending);
  		taskstats_tgid_free(sig);
@@ -7011,15 +7032,15 @@ Index: linux-2.6.31-bfs/kernel/exit.c
 @@ -206,6 +206,7 @@ repeat:
  			leader->exit_state = EXIT_DEAD;
  	}
-
+ 
 +	sched_exit(p);
  	write_unlock_irq(&tasklist_lock);
  	release_thread(p);
  	call_rcu(&p->rcu, delayed_put_task_struct);
 Index: linux-2.6.31-bfs/kernel/fork.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/fork.c	2009-10-01 14:29:14.916585577 +1000
-+++ linux-2.6.31-bfs/kernel/fork.c	2009-10-01 14:29:39.967334966 +1000
+--- linux-2.6.31-bfs.orig/kernel/fork.c	2009-10-01 14:37:20.093168684 +1000
++++ linux-2.6.31-bfs/kernel/fork.c	2009-10-01 14:37:42.513168072 +1000
 @@ -1193,7 +1193,6 @@ static struct task_struct *copy_process(
  	 * parent's CPU). This avoids alot of nasty races.
  	 */
@@ -7030,8 +7051,8 @@ Index: linux-2.6.31-bfs/kernel/fork.c
  		set_task_cpu(p, smp_processor_id());
 Index: linux-2.6.31-bfs/mm/oom_kill.c
 ===================================================================
---- linux-2.6.31-bfs.orig/mm/oom_kill.c	2009-10-01 14:29:14.860585651 +1000
-+++ linux-2.6.31-bfs/mm/oom_kill.c	2009-10-01 14:29:39.968335513 +1000
+--- linux-2.6.31-bfs.orig/mm/oom_kill.c	2009-10-01 14:37:20.150169282 +1000
++++ linux-2.6.31-bfs/mm/oom_kill.c	2009-10-01 14:37:42.530169729 +1000
 @@ -338,7 +338,7 @@ static void __oom_kill_task(struct task_
  	 * all the memory it needs. That way it should be able to
  	 * exit() and clear out its resources quickly...
@@ -7039,16 +7060,16 @@ Index: linux-2.6.31-bfs/mm/oom_kill.c
 -	p->rt.time_slice = HZ;
 +	p->time_slice = HZ;
  	set_tsk_thread_flag(p, TIF_MEMDIE);
-
+ 
  	force_sig(SIGKILL, p);
 Index: linux-2.6.31-bfs/init/Kconfig
 ===================================================================
---- linux-2.6.31-bfs.orig/init/Kconfig	2009-10-01 14:29:14.944585505 +1000
-+++ linux-2.6.31-bfs/init/Kconfig	2009-10-01 14:29:39.969335081 +1000
+--- linux-2.6.31-bfs.orig/init/Kconfig	2009-10-01 14:37:20.161168259 +1000
++++ linux-2.6.31-bfs/init/Kconfig	2009-10-01 14:37:42.547168743 +1000
 @@ -441,65 +441,13 @@ config LOG_BUF_SHIFT
  config HAVE_UNSTABLE_SCHED_CLOCK
  	bool
-
+ 
 -config GROUP_SCHED
 -	bool "Group CPU scheduler"
 -	depends on EXPERIMENTAL
@@ -7111,11 +7132,11 @@ Index: linux-2.6.31-bfs/init/Kconfig
 -		- Documentation/scheduler/sched-design-CFS.txt	(CFS)
  		- Documentation/cgroups/ (features for grouping, isolation
  					  and resource control)
-
+ 
 @@ -557,13 +505,6 @@ config PROC_PID_CPUSET
  	depends on CPUSETS
  	default y
-
+ 
 -config CGROUP_CPUACCT
 -	bool "Simple CPU accounting cgroup subsystem"
 -	depends on CGROUPS
@@ -7128,21 +7149,21 @@ Index: linux-2.6.31-bfs/init/Kconfig
  	help
 Index: linux-2.6.31-bfs/kernel/delayacct.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/delayacct.c	2009-10-01 14:29:14.903585460 +1000
-+++ linux-2.6.31-bfs/kernel/delayacct.c	2009-10-01 14:29:39.970335278 +1000
+--- linux-2.6.31-bfs.orig/kernel/delayacct.c	2009-10-01 14:37:20.042168457 +1000
++++ linux-2.6.31-bfs/kernel/delayacct.c	2009-10-01 14:37:42.563167771 +1000
 @@ -127,7 +127,7 @@ int __delayacct_add_tsk(struct taskstats
  	 */
  	t1 = tsk->sched_info.pcount;
  	t2 = tsk->sched_info.run_delay;
 -	t3 = tsk->se.sum_exec_runtime;
 +	t3 = tsk->sched_time;
-
+ 
  	d->cpu_count += t1;
-
+ 
 Index: linux-2.6.31-bfs/kernel/trace/trace.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/trace/trace.c	2009-10-01 14:29:14.891585331 +1000
-+++ linux-2.6.31-bfs/kernel/trace/trace.c	2009-10-01 14:29:39.971335126 +1000
+--- linux-2.6.31-bfs.orig/kernel/trace/trace.c	2009-10-01 14:37:20.055167877 +1000
++++ linux-2.6.31-bfs/kernel/trace/trace.c	2009-10-01 14:37:42.568170062 +1000
 @@ -275,10 +275,10 @@ unsigned long trace_flags = TRACE_ITER_P
  void trace_wake_up(void)
  {
@@ -7155,11 +7176,11 @@ Index: linux-2.6.31-bfs/kernel/trace/trace.c
 +	if (!(trace_flags & TRACE_ITER_BLOCK) && !grunqueue_is_locked())
  		wake_up(&trace_wait);
  }
-
+ 
 Index: linux-2.6.31-bfs/fs/proc/base.c
 ===================================================================
---- linux-2.6.31-bfs.orig/fs/proc/base.c	2009-10-01 14:29:14.855585643 +1000
-+++ linux-2.6.31-bfs/fs/proc/base.c	2009-10-01 14:29:39.973335240 +1000
+--- linux-2.6.31-bfs.orig/fs/proc/base.c	2009-10-01 14:37:20.003169510 +1000
++++ linux-2.6.31-bfs/fs/proc/base.c	2009-10-01 14:37:42.597168592 +1000
 @@ -366,7 +366,7 @@ static int proc_pid_stack(struct seq_fil
  static int proc_pid_schedstat(struct task_struct *task, char *buffer)
  {
@@ -7171,8 +7192,8 @@ Index: linux-2.6.31-bfs/fs/proc/base.c
  }
 Index: linux-2.6.31-bfs/include/linux/ioprio.h
 ===================================================================
---- linux-2.6.31-bfs.orig/include/linux/ioprio.h	2009-10-01 14:29:14.953585392 +1000
-+++ linux-2.6.31-bfs/include/linux/ioprio.h	2009-10-01 14:29:39.975335634 +1000
+--- linux-2.6.31-bfs.orig/include/linux/ioprio.h	2009-10-01 14:37:20.022167837 +1000
++++ linux-2.6.31-bfs/include/linux/ioprio.h	2009-10-01 14:37:42.601168230 +1000
 @@ -73,7 +73,7 @@ static inline int task_nice_ioprio(struc
   */
  static inline int task_nice_ioclass(struct task_struct *task)
@@ -7182,15 +7203,29 @@ Index: linux-2.6.31-bfs/include/linux/ioprio.h
  		return IOPRIO_CLASS_IDLE;
  	else if (task->policy == SCHED_FIFO || task->policy == SCHED_RR)
  		return IOPRIO_CLASS_RT;
+Index: linux-2.6.31-bfs/Makefile
+===================================================================
+--- linux-2.6.31-bfs.orig/Makefile	2009-10-01 14:37:20.156169343 +1000
++++ linux-2.6.31-bfs/Makefile	2009-10-05 03:19:09.474223152 +1100
+@@ -1,8 +1,8 @@
+ VERSION = 2
+ PATCHLEVEL = 6
+ SUBLEVEL = 31
+-EXTRAVERSION =
+-NAME = Man-Eating Seals of Antiquity
++EXTRAVERSION = -bfs302
++NAME = BFS Powered
+ 
  # *DOCUMENTATION*
+ # To see a list of typical targets execute "make help"
 Index: linux-2.6.31-bfs/kernel/timer.c
 ===================================================================
---- linux-2.6.31-bfs.orig/kernel/timer.c	2009-10-01 14:29:14.877585297 +1000
-+++ linux-2.6.31-bfs/kernel/timer.c	2009-10-01 14:29:39.977335330 +1000
+--- linux-2.6.31-bfs.orig/kernel/timer.c	2009-10-01 14:37:20.048169921 +1000
++++ linux-2.6.31-bfs/kernel/timer.c	2009-10-01 14:37:42.639178118 +1000
 @@ -1153,8 +1153,7 @@ void update_process_times(int user_tick)
  	struct task_struct *p = current;
  	int cpu = smp_processor_id();
-
+ 
 -	/* Note: this timer irq context must be accounted for as well. */
 -	account_process_tick(p, user_tick);
 +	/* Accounting is done within sched_bfs.c */
@@ -7199,14 +7234,14 @@ Index: linux-2.6.31-bfs/kernel/timer.c
  		rcu_check_callbacks(cpu, user_tick);
 Index: linux-2.6.31-bfs/init/main.c
 ===================================================================
---- linux-2.6.31-bfs.orig/init/main.c	2009-10-01 14:29:14.519585666 +1000
-+++ linux-2.6.31-bfs/init/main.c	2009-10-01 14:29:39.978335178 +1000
+--- linux-2.6.31-bfs.orig/init/main.c	2009-10-01 14:37:20.167168265 +1000
++++ linux-2.6.31-bfs/init/main.c	2009-10-05 03:18:35.547598366 +1100
 @@ -843,6 +843,8 @@ static noinline int init_post(void)
  	system_state = SYSTEM_RUNNING;
  	numa_default_policy();
-
-+	printk(KERN_INFO"Running BFS CPU scheduler v0.300 by Con Kolivas.\n");
+ 
++	printk(KERN_INFO"Running BFS CPU scheduler v0.302 by Con Kolivas.\n");
 +
  	if (sys_open((const char __user *) "/dev/console", O_RDWR, 0) < 0)
  		printk(KERN_WARNING "Warning: unable to open an initial console.\n");
-
+ 
